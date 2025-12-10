@@ -1,0 +1,13 @@
+[package]
+name = "aplicon-clustering"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+clap = { version = "4.5.53", features = ["derive"] }
+needletail = "0.6.3"
+astarpa2.git = "https://github.com/ragnargrootkoerkamp/astar-pairwise-aligner"
+log = "0.4.29"
+env_logger = "0.11.8"
+pa-types = "1.2.0"
+sassy = "0.1.10"
