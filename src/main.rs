@@ -7,7 +7,7 @@ use std::{
 use clap::Parser;
 use log::info;
 use needletail;
-use rayon::iter::{IntoParallelIterator, ParallelIterator};
+use rayon::iter::{IntoParallelIterator, IntoParallelRefIterator, ParallelIterator};
 use sassy::profiles::Iupac;
 
 #[derive(Debug, clap::Parser)]
@@ -189,22 +189,25 @@ fn main() {
     // take the one with lowest median.
     for (ci, cluster) in clusters.iter().enumerate() {
         let seqs = cluster.seqs.lock().unwrap();
-        let mut distances: Vec<Vec<i32>> = vec![vec![0; seqs.len()]; seqs.len()];
         eprintln!("Cluster {ci}:");
-        let mut best_med = i32::MAX;
+        let mut best_med = (i32::MAX, 0);
         for (j, (seq_j, _)) in seqs.iter().enumerate() {
-            for (k, (seq_k, _)) in seqs.iter().enumerate() {
-                let threshold = threshold(&seq_k);
-                let matches = searcher.search(seq_k, seq_j, threshold);
-                let best_match = matches.iter().min_by_key(|m| m.cost);
-                let dist = best_match.map_or(i32::MAX, |m| m.cost);
-                distances[j][k] = dist;
-            }
-            distances[j].sort_unstable();
-            let med = distances[j][distances[j].len() / 2];
+            let mut dists = seqs
+                .par_iter()
+                .map_with(searcher.clone(), |searcher, (seq_k, _)| {
+                    let threshold = threshold(&seq_k);
+                    let matches = searcher.search(seq_k, seq_j, threshold);
+                    let best_match = matches.iter().min_by_key(|m| m.cost);
+                    let dist = best_match.map_or(i32::MAX, |m| m.cost);
+                    dist
+                })
+                .collect::<Vec<i32>>();
+            dists.sort_unstable();
+            let med = dists[dists.len() / 2];
             eprint!(" {med}");
-            best_med = best_med.min(med);
+            best_med = best_med.min((med, j));
         }
-        eprintln!(" => {best_med}");
+        let (best_med_dist, best_idx) = best_med;
+        eprintln!(" => best {best_med_dist}");
     }
 }
