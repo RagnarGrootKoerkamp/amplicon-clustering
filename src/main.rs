@@ -68,21 +68,26 @@ fn main() {
     // let mut aligner = params.make_aligner(false);
 
     // sassy
-    let searcher = sassy::Searcher::<Iupac>::new_rc_with_overhang(args.alpha);
+    let mut searcher = sassy::Searcher::<Iupac>::new_rc_with_overhang(args.alpha);
 
     let done = AtomicUsize::new(0);
 
     let start = std::time::Instant::now();
 
+    let threshold = |read: &Vec<u8>| -> usize {
+        let threshold = if let Some(r) = args.relative {
+            (r * read.len() as f32) as usize
+        } else {
+            args.threshold
+                .expect("Either --threshold or --relative must be specified")
+        };
+        threshold
+    };
+
     reads
         .into_par_iter()
-        .for_each_with(searcher, |searcher, read: Vec<u8>| {
-            let threshold = if let Some(r) = args.relative {
-                (r * read.len() as f32) as usize
-            } else {
-                args.threshold
-                    .expect("Either --threshold or --relative must be specified")
-            };
+        .for_each_with(searcher.clone(), |searcher, read: Vec<u8>| {
+            let threshold = threshold(&read);
 
             'clusters_changed: loop {
                 let clusters = global_clusters.read().unwrap();
@@ -103,7 +108,7 @@ fn main() {
                     let j = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     let trhp = (j + 1) as f64 / start.elapsed().as_secs_f64();
                     eprintln!(
-                        "{j:>6} {trhp:>5.0}/s Best cost: {:>4} (len {:>4}) => append to {:>3}",
+                        "{j:>6}/{num_reads} {trhp:>5.0}/s Best cost: {:>4} (len {:>4}) => append to {:>3}",
                         best.0,
                         read.len(),
                         best.1
@@ -122,7 +127,7 @@ fn main() {
                     let j = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     let trhp = (j + 1) as f64 / start.elapsed().as_secs_f64();
                     eprintln!(
-                        "{j:>6} {trhp:>5.0}/s Best cost: {:>4} (len {:>4}) => start new cluster {:>3}",
+                        "{j:>6}/{num_reads} {trhp:>5.0}/s Best cost: {:>4} (len {:>4}) => start new cluster {:>3}",
                         best.0,
                         read.len(),
                         clusters.len()
@@ -132,4 +137,45 @@ fn main() {
                 }
             }
         });
+
+    let duration = start.elapsed();
+    eprintln!(
+        "Clustering completed in {:.1} seconds",
+        duration.as_secs_f64()
+    );
+    eprintln!("Cluster sizes");
+    let clusters = global_clusters.into_inner().unwrap();
+    for (i, cluster) in clusters.iter().enumerate() {
+        let seqs = cluster.seqs.lock().unwrap();
+        let mut lens = seqs.iter().map(|(s, _)| s.len()).collect::<Vec<usize>>();
+        lens.sort_unstable();
+        eprintln!(
+            "Cluster {:>3}: {:>4} seqs with lens {lens:?}",
+            i,
+            seqs.len()
+        );
+    }
+
+    // For each cluster, compute the distance from each seq to all others, and
+    // take the one with lowest median.
+    for (ci, cluster) in clusters.iter().enumerate() {
+        let seqs = cluster.seqs.lock().unwrap();
+        let mut distances: Vec<Vec<i32>> = vec![vec![0; seqs.len()]; seqs.len()];
+        eprintln!("Cluster {ci}:");
+        let mut best_med = i32::MAX;
+        for (j, (seq_j, _)) in seqs.iter().enumerate() {
+            for (k, (seq_k, _)) in seqs.iter().enumerate() {
+                let threshold = threshold(&seq_k);
+                let matches = searcher.search(seq_k, seq_j, threshold);
+                let best_match = matches.iter().min_by_key(|m| m.cost);
+                let dist = best_match.map_or(i32::MAX, |m| m.cost);
+                distances[j][k] = dist;
+            }
+            distances[j].sort_unstable();
+            let med = distances[j][distances[j].len() / 2];
+            eprint!(" {med}");
+            best_med = best_med.min(med);
+        }
+        eprintln!(" => {best_med}");
+    }
 }
