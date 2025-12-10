@@ -1,4 +1,7 @@
-use std::path::PathBuf;
+use std::{
+    path::PathBuf,
+    sync::{Mutex, RwLock},
+};
 
 use clap::Parser;
 use log::info;
@@ -18,18 +21,23 @@ struct Args {
 
 /// The first element is the representative.
 struct Cluster {
+    root: Vec<u8>,
     /// (Sequence, Dist)
-    seqs: Vec<(Vec<u8>, pa_types::Cost)>,
+    seqs: Mutex<Vec<(Vec<u8>, pa_types::Cost)>>,
 }
 
 impl Cluster {
     fn new(seq: Vec<u8>) -> Self {
         Self {
-            seqs: vec![(seq, 0)],
+            root: seq.clone(),
+            seqs: Mutex::new(vec![(seq, 0)]),
         }
     }
     fn representative(&self) -> &[u8] {
-        &self.seqs[0].0
+        &self.root
+    }
+    fn push(&self, seq: Vec<u8>, dist: pa_types::Cost) {
+        self.seqs.lock().unwrap().push((seq, dist));
     }
 }
 
@@ -52,7 +60,7 @@ fn main() {
     let avg_len = total_len as f64 / num_reads as f64;
     info!("Average read length: {:.1}", avg_len);
 
-    let mut clusters: Vec<Cluster> = vec![];
+    let global_clusters: RwLock<Vec<Cluster>> = RwLock::new(vec![]);
 
     // A*PA2
     // let params = astarpa2::AstarPa2Params::full();
@@ -61,7 +69,6 @@ fn main() {
     // sassy
     let mut searcher = sassy::Searcher::<Iupac>::new_rc_with_overhang(args.alpha);
 
-    let mut hist = vec![];
     for (j, read) in reads.into_iter().enumerate() {
         let threshold = if let Some(r) = args.relative {
             (r * read.len() as f32) as usize
@@ -70,38 +77,48 @@ fn main() {
                 .expect("Either --threshold or --relative must be specified")
         };
 
-        hist.resize(10000, 0);
-        let mut best = (i32::MAX, 0);
-        for (i, cluster) in clusters.iter().enumerate() {
-            let repr = cluster.representative();
-            // let cost = aligner.align(&read, repr).0;
+        'clusters_changed: loop {
+            let clusters = global_clusters.read().unwrap();
 
-            let matches = searcher.search(&read, repr, threshold);
-            let best_match = matches.iter().min_by_key(|m| m.cost);
-            if let Some(best_m) = best_match {
-                let cost = best_m.cost;
-                best = best.min((cost, i));
-                hist[cost as usize] += 1;
+            let mut best = (i32::MAX, 0);
+            for (i, cluster) in clusters.iter().enumerate() {
+                let repr = cluster.representative();
+                // let cost = aligner.align(&read, repr).0;
+
+                let matches = searcher.search(&read, repr, threshold);
+                let best_match = matches.iter().min_by_key(|m| m.cost);
+                if let Some(best_m) = best_match {
+                    let cost = best_m.cost;
+                    best = best.min((cost, i));
+                }
+            }
+            if best.0 < threshold as i32 {
+                eprintln!(
+                    "{j:>6} Best cost: {:>4} (len {:>4}) => append to {:>3}",
+                    best.0,
+                    read.len(),
+                    best.1
+                );
+                clusters[best.1].push(read, best.0);
+                break;
+            } else {
+                let old_len = clusters.len();
+                drop(clusters);
+                let mut clusters = global_clusters.write().unwrap();
+                if clusters.len() != old_len {
+                    // clusters changed, retry
+                    continue 'clusters_changed;
+                }
+
+                eprintln!(
+                    "{j:>6} Best cost: {:>4} (len {:>4}) => start new cluster {:>3}",
+                    best.0,
+                    read.len(),
+                    clusters.len()
+                );
+                clusters.push(Cluster::new(read));
+                break;
             }
         }
-        // eprintln!("{j:>6} Histogram for read of length {}:", read.len());
-        if best.0 < threshold as i32 {
-            eprintln!(
-                "{j:>6} Best cost: {:>4} (len {:>4}) => append to {:>3}",
-                best.0,
-                read.len(),
-                best.1
-            );
-            clusters[best.1].seqs.push((read, best.0));
-        } else {
-            eprintln!(
-                "{j:>6} Best cost: {:>4} (len {:>4}) => start new cluster {:>3}",
-                best.0,
-                read.len(),
-                clusters.len()
-            );
-            clusters.push(Cluster::new(read));
-        }
-        hist.clear();
     }
 }
