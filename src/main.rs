@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     path::PathBuf,
     sync::{atomic::AtomicUsize, Mutex, RwLock},
 };
@@ -18,6 +19,13 @@ struct Args {
     alpha: f32,
     #[clap(short, long)]
     relative: Option<f32>,
+
+    /// Discard too short reads
+    #[clap(long, default_value_t = 425)]
+    min_len: usize,
+    /// Discard too long reads
+    #[clap(long, default_value_t = 550)]
+    max_len: usize,
 }
 
 /// The first element is the representative.
@@ -60,6 +68,27 @@ fn main() {
     let total_len: usize = reads.iter().map(|r| r.len()).sum();
     let avg_len = total_len as f64 / num_reads as f64;
     info!("Average read length: {:.1}", avg_len);
+
+    // Print histogram of read lengths
+    {
+        const B: usize = 25;
+        let mut lens = HashMap::new();
+        for read in &reads {
+            *lens.entry(read.len() / B).or_default() += 1;
+        }
+        let mut lens_vec: Vec<(usize, usize)> = lens.into_iter().collect();
+        lens_vec.sort_unstable();
+        eprintln!("Read length histogram:");
+        for (bucket, count) in lens_vec {
+            eprintln!(" {:>4}..{:>4}: {}", bucket * B, (bucket + 1) * B, count);
+        }
+    }
+
+    // Filter reads by length
+    {
+        eprintln!("Filtering for length {}..{}", args.min_len, args.max_len);
+        reads.retain(|r| args.min_len <= r.len() && r.len() <= args.max_len);
+    }
 
     let global_clusters: RwLock<Vec<Cluster>> = RwLock::new(vec![]);
 
