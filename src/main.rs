@@ -9,7 +9,11 @@ use sassy::profiles::Iupac;
 struct Args {
     input: PathBuf,
     #[clap(short, long)]
-    threshold: usize,
+    threshold: Option<usize>,
+    #[clap(short, long)]
+    alpha: f32,
+    #[clap(short, long)]
+    relative: Option<f32>,
 }
 
 /// The first element is the representative.
@@ -55,11 +59,16 @@ fn main() {
     // let mut aligner = params.make_aligner(false);
 
     // sassy
-    let mut searcher = sassy::Searcher::<Iupac>::new_rc_with_overhang(0.5);
+    let mut searcher = sassy::Searcher::<Iupac>::new_rc_with_overhang(args.alpha);
 
     let mut hist = vec![];
     for (j, read) in reads.into_iter().enumerate() {
-        let threshold = args.threshold * read.len() / 100;
+        let threshold = if let Some(r) = args.relative {
+            (r * read.len() as f32) as usize
+        } else {
+            args.threshold
+                .expect("Either --threshold or --relative must be specified")
+        };
 
         hist.resize(10000, 0);
         let mut best = (i32::MAX, 0);
