@@ -1,11 +1,12 @@
 use std::{
     path::PathBuf,
-    sync::{Mutex, RwLock},
+    sync::{atomic::AtomicUsize, Mutex, RwLock},
 };
 
 use clap::Parser;
 use log::info;
 use needletail;
+use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use sassy::profiles::Iupac;
 
 #[derive(Debug, clap::Parser)]
@@ -67,58 +68,68 @@ fn main() {
     // let mut aligner = params.make_aligner(false);
 
     // sassy
-    let mut searcher = sassy::Searcher::<Iupac>::new_rc_with_overhang(args.alpha);
+    let searcher = sassy::Searcher::<Iupac>::new_rc_with_overhang(args.alpha);
 
-    for (j, read) in reads.into_iter().enumerate() {
-        let threshold = if let Some(r) = args.relative {
-            (r * read.len() as f32) as usize
-        } else {
-            args.threshold
-                .expect("Either --threshold or --relative must be specified")
-        };
+    let done = AtomicUsize::new(0);
 
-        'clusters_changed: loop {
-            let clusters = global_clusters.read().unwrap();
+    let start = std::time::Instant::now();
 
-            let mut best = (i32::MAX, 0);
-            for (i, cluster) in clusters.iter().enumerate() {
-                let repr = cluster.representative();
-                // let cost = aligner.align(&read, repr).0;
-
-                let matches = searcher.search(&read, repr, threshold);
-                let best_match = matches.iter().min_by_key(|m| m.cost);
-                if let Some(best_m) = best_match {
-                    let cost = best_m.cost;
-                    best = best.min((cost, i));
-                }
-            }
-            if best.0 < threshold as i32 {
-                eprintln!(
-                    "{j:>6} Best cost: {:>4} (len {:>4}) => append to {:>3}",
-                    best.0,
-                    read.len(),
-                    best.1
-                );
-                clusters[best.1].push(read, best.0);
-                break;
+    reads
+        .into_par_iter()
+        .for_each_with(searcher, |searcher, read: Vec<u8>| {
+            let threshold = if let Some(r) = args.relative {
+                (r * read.len() as f32) as usize
             } else {
-                let old_len = clusters.len();
-                drop(clusters);
-                let mut clusters = global_clusters.write().unwrap();
-                if clusters.len() != old_len {
-                    // clusters changed, retry
-                    continue 'clusters_changed;
-                }
+                args.threshold
+                    .expect("Either --threshold or --relative must be specified")
+            };
 
-                eprintln!(
-                    "{j:>6} Best cost: {:>4} (len {:>4}) => start new cluster {:>3}",
-                    best.0,
-                    read.len(),
-                    clusters.len()
-                );
-                clusters.push(Cluster::new(read));
-                break;
+            'clusters_changed: loop {
+                let clusters = global_clusters.read().unwrap();
+
+                let mut best = (i32::MAX, 0);
+                for (i, cluster) in clusters.iter().enumerate() {
+                    let repr = cluster.representative();
+                    // let cost = aligner.align(&read, repr).0;
+
+                    let matches = searcher.search(&read, repr, threshold);
+                    let best_match = matches.iter().min_by_key(|m| m.cost);
+                    if let Some(best_m) = best_match {
+                        let cost = best_m.cost;
+                        best = best.min((cost, i));
+                    }
+                }
+                if best.0 < threshold as i32 {
+                    let j = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let trhp = (j + 1) as f64 / start.elapsed().as_secs_f64();
+                    eprintln!(
+                        "{j:>6} {trhp:>5.0}/s Best cost: {:>4} (len {:>4}) => append to {:>3}",
+                        best.0,
+                        read.len(),
+                        best.1
+                    );
+                    clusters[best.1].push(read, best.0);
+                    break;
+                } else {
+                    let old_len = clusters.len();
+                    drop(clusters);
+                    let mut clusters = global_clusters.write().unwrap();
+                    if clusters.len() != old_len {
+                        // clusters changed, retry
+                        continue 'clusters_changed;
+                    }
+
+                    let j = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let trhp = (j + 1) as f64 / start.elapsed().as_secs_f64();
+                    eprintln!(
+                        "{j:>6} {trhp:>5.0}/s Best cost: {:>4} (len {:>4}) => start new cluster {:>3}",
+                        best.0,
+                        read.len(),
+                        clusters.len()
+                    );
+                    clusters.push(Cluster::new(read));
+                    break;
+                }
             }
-        }
-    }
+        });
 }
