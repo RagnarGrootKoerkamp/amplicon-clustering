@@ -15,3 +15,4 @@ env_logger = "0.11.8"
 pa-types = "1.2.0"
 rayon = "1.11.0"
 sassy.git = "https://github.com/ragnargrootkoerkamp/sassy"
+tokio = { version = "1.48.0", features = ["sync"] }

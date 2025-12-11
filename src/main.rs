@@ -4,14 +4,14 @@ use std::{
     path::PathBuf,
     sync::{
         atomic::{AtomicUsize, Ordering::Relaxed},
-        Mutex, RwLock,
+        Mutex,
     },
 };
 
 use clap::Parser;
 use log::info;
 use needletail;
-use rayon::iter::{IntoParallelIterator, IntoParallelRefIterator, ParallelIterator};
+use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use sassy::profiles::Iupac;
 
 #[derive(Debug, clap::Parser)]
@@ -23,6 +23,9 @@ struct Args {
     alpha: f32,
     #[clap(short, long, default_value = "0.15")]
     relative: Option<f32>,
+
+    #[clap(short = 'j', long)]
+    threads: Option<usize>,
 
     /// Discard too short reads
     #[clap(long, default_value_t = 425)]
@@ -40,21 +43,21 @@ struct Args {
 struct Cluster<'r> {
     root: Vec<u8>,
     /// (Sequence, Dist)
-    seqs: Mutex<Vec<(&'r [u8], pa_types::Cost)>>,
+    seqs: Vec<(&'r [u8], pa_types::Cost)>,
 }
 
 impl<'r> Cluster<'r> {
     fn new(seq: &'r [u8]) -> Self {
         Self {
             root: seq.to_vec(),
-            seqs: Mutex::new(vec![(seq, 0)]),
+            seqs: vec![(seq, 0)],
         }
     }
     fn representative(&self) -> &[u8] {
         &self.root
     }
-    fn push(&self, seq: &'r [u8], dist: pa_types::Cost) {
-        self.seqs.lock().unwrap().push((seq, dist));
+    fn push(&mut self, seq: &'r [u8], dist: pa_types::Cost) {
+        self.seqs.push((seq, dist));
     }
 }
 
@@ -101,11 +104,9 @@ fn main() {
     // Sort reads by decreasing length
     reads.sort_unstable_by_key(|r| Reverse(r.len()));
 
-    let global_clusters: RwLock<Vec<Cluster>> = RwLock::new(vec![]);
-
-    // A*PA2
-    // let params = astarpa2::AstarPa2Params::full();
-    // let mut aligner = params.make_aligner(false);
+    let global_clusters: Vec<Mutex<Cluster>> = (0..300)
+        .map(|_| Mutex::new(Cluster::new(&reads[0])))
+        .collect();
 
     // sassy
     let searcher = sassy::Searcher::<Iupac>::new_rc_with_overhang(args.alpha)
@@ -125,72 +126,76 @@ fn main() {
     };
 
     let num_reads = reads.len();
-    let done = AtomicUsize::new(0);
+    let idx = AtomicUsize::new(0);
 
-    let tid = AtomicUsize::new(0);
-    let s2 = searcher.clone();
-    (0..num_reads)
-        .into_par_iter()
-        .for_each_init(move || {
-            let tid = tid.fetch_add(1, Relaxed);
-            (s2.clone(), tid)
-        }, |(searcher, tid), rid| {
-            // eprintln!("{tid} starting..");
-            let j = done.fetch_add(1, Relaxed);
-            let trhp = (j + 1) as f64 / start.elapsed().as_secs_f64();
-            let read = &reads[j];
-            assert!(!read.is_empty());
+    eprintln!("Create channel");
+    let (tx, _rx) = tokio::sync::broadcast::channel::<Vec<u8>>(10000);
+    drop(_rx);
 
-            let threshold = threshold(&read);
+    std::thread::scope(|scope| {
+        for tid in 0..args.threads.unwrap_or(6) {
+            let mut searcher = searcher.clone();
+            let global_clusters = &global_clusters;
+            let mut local_roots = vec![];
+            let reads = &reads;
+            let idx = &idx;
+            let tx = tx.clone();
+            let mut rx = tx.subscribe();
+            scope.spawn(move || {
+                eprintln!("Spawned thread {tid}");
+                loop {
+                    let idx = idx.fetch_add(1, Relaxed);
+                    let trhp = (idx + 1) as f64 / start.elapsed().as_secs_f64();
+                    let Some(read) = reads.get(idx) else {break;};
+                    assert!(!read.is_empty());
+                    let threshold = threshold(&read);
 
-            'clusters_changed: loop {
-                let clusters = global_clusters.read().unwrap();
+                    'clusters_changed: loop {
+                        while let Ok(new_root) = rx.try_recv() {
+                            eprintln!("{tid:>4} received new root of len {}", new_root.len());
+                            local_roots.push(new_root);
+                        }
+                        let local_roots: Vec<&[u8]> = local_roots.iter().map(|r| r.as_slice()).collect();
 
-                let mut best = (i32::MAX, 0);
-                let reprs = clusters
-                    .iter()
-                    .map(|c| c.representative())
-                    .collect::<Vec<&[u8]>>();
 
-                let matches = searcher.search_texts(&read, &reprs, threshold);
-                let best_match = matches.iter().min_by_key(|m| (m.1.cost, m.0));
-                if let Some(best_m) = best_match {
-                    let cost = best_m.1.cost;
-                    best = best.min((cost, best_m.0));
-                }
+                        let mut best = (i32::MAX, 0);
 
-                if best.0 < threshold as i32 {
-                    eprintln!(
-                        "{tid:>4} {rid:>4} {j:>6}/{num_reads} {trhp:>5.0}/s Best cost: {:>4} (len {:>4}) => append to {:>3}",
-                        best.0,
-                        read.len(),
-                        best.1
-                    );
-                    clusters[best.1].push(read, best.0);
-                    break;
-                } else {
-                    let old_len = clusters.len();
-                    drop(clusters);
-                    let mut clusters = global_clusters.write().unwrap();
-                    if clusters.len() != old_len {
-                        // clusters changed, retry
-                    eprintln!(
-                        "{tid:>4} {rid:>4} retry",
-                    );
-                        continue 'clusters_changed;
+                        let matches = searcher.search_texts(&read, &local_roots, threshold);
+                        let best_match = matches.iter().min_by_key(|m| (m.1.cost, m.0));
+                        if let Some(best_m) = best_match {
+                            let cost = best_m.1.cost;
+                            best = best.min((cost, best_m.0));
+                        }
+
+                        if best.0 < threshold as i32 {
+                            eprintln!(
+                                "{tid:>4} {idx:>6}/{num_reads} {trhp:>5.0}/s Best cost: {:>4} (len {:>4}) => append to {:>3}",
+                                best.0,
+                                read.len(),
+                                best.1
+                            );
+                            global_clusters[best.1].lock().unwrap().push(read, best.0);
+                            break;
+                        } else {
+                            if !rx.is_empty() {
+                                eprintln!("{tid:>4} {idx:>4} retry",);
+                                continue 'clusters_changed;
+                            }
+
+                            eprintln!(
+                                "{tid:>4} {idx:>6}/{num_reads} {trhp:>5.0}/s Best cost: {:>4} (len {:>4}) => start new cluster {}",
+                                best.0,
+                                read.len(),
+                                local_roots.len()
+                            );
+                            tx.send(read.to_vec()).unwrap();
+                            break;
+                        }
                     }
-
-                    eprintln!(
-                        "{tid:>4} {rid:>4} {j:>6}/{num_reads} {trhp:>5.0}/s Best cost: {:>4} (len {:>4}) => start new cluster {:>3}",
-                        best.0,
-                        read.len(),
-                        clusters.len()
-                    );
-                    clusters.push(Cluster::new(read));
-                    break;
                 }
-            }
-        });
+            });
+        }
+    });
 
     let duration = start.elapsed();
     eprintln!(
@@ -198,15 +203,18 @@ fn main() {
         duration.as_secs_f64()
     );
 
-    let mut clusters = global_clusters.into_inner().unwrap();
+    let mut clusters: Vec<_> = global_clusters
+        .into_iter()
+        .map(|c| c.into_inner().unwrap())
+        .collect();
     {
         eprintln!("Cluster sizes");
         // Sort clusters by size.
-        clusters.sort_by_cached_key(|c| Reverse(c.seqs.lock().unwrap().len()));
+        clusters.sort_by_cached_key(|c| Reverse(c.seqs.len()));
         // retain only sufficiently large clusters
-        clusters.retain(|c| c.seqs.lock().unwrap().len() >= args.min_cluster_size);
+        clusters.retain(|c| c.seqs.len() >= args.min_cluster_size);
         for (i, cluster) in clusters.iter().enumerate() {
-            let seqs = cluster.seqs.lock().unwrap();
+            let seqs = &cluster.seqs;
             let mut lens = seqs.iter().map(|(s, _)| s.len()).collect::<Vec<usize>>();
             lens.sort_unstable();
             eprintln!(
@@ -222,7 +230,7 @@ fn main() {
     // For each cluster, compute the distance from each seq to all others, and
     // take the one with lowest median.
     for (ci, cluster) in clusters.iter().enumerate() {
-        let seqs = cluster.seqs.lock().unwrap();
+        let seqs = &cluster.seqs;
         eprint!("Cluster {ci}:");
         let mut best_med = (i32::MAX, 0);
         for (j, (seq_j, _)) in seqs.iter().enumerate() {
