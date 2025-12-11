@@ -160,12 +160,15 @@ fn main() {
 
                         let mut best = (i32::MAX, 0);
 
-                        let matches = searcher.search_texts(&read, &local_roots, threshold);
-                        let best_match = matches.iter().min_by_key(|m| (m.1.cost, m.0));
+                        let mut matches = searcher.search_texts(&read, &local_roots, threshold);
+                        matches.sort_by_key(|m| (m.1.cost, m.0));
+                        let best_match = matches.get(0);
                         if let Some(best_m) = best_match {
                             let cost = best_m.1.cost;
                             best = best.min((cost, best_m.0));
                         }
+
+                        eprintln!("{tid: >4} matches: {:?}", matches.iter().map(|m| m.1.cost).collect::<Vec<_>>());
 
                         if best.0 < threshold as i32 {
                             eprintln!(
