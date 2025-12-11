@@ -3,6 +3,9 @@ name = "aplicon-clustering"
 version = "0.1.0"
 edition = "2024"
 
+[profile.release]
+panic = "abort"
+
 [dependencies]
 clap = { version = "4.5.53", features = ["derive"] }
 needletail = "0.6.3"
