@@ -207,13 +207,13 @@ fn main() {
     // take the one with lowest median.
     for (ci, cluster) in clusters.iter().enumerate() {
         let seqs = cluster.seqs.lock().unwrap();
-        eprintln!("Cluster {ci}:");
+        eprint!("Cluster {ci}:");
         let mut best_med = (i32::MAX, 0);
         for (j, (seq_j, _)) in seqs.iter().enumerate() {
             let mut dists = seqs
                 .par_iter()
                 .map_with(searcher.clone(), |searcher, (seq_k, _)| {
-                    let threshold = threshold(&seq_k);
+                    let threshold = threshold(&seq_j);
                     let matches = searcher.search(seq_k, seq_j, threshold);
                     let best_match = matches.iter().min_by_key(|m| m.cost);
                     let dist = best_match.map_or(i32::MAX, |m| m.cost);
@@ -222,10 +222,10 @@ fn main() {
                 .collect::<Vec<i32>>();
             dists.sort_unstable();
             let med = dists[dists.len() / 2];
-            eprint!(" {med}");
+            // eprint!(" {med}");
             best_med = best_med.min((med, j));
         }
         let (best_med_dist, best_idx) = best_med;
-        eprintln!(" => best {best_med_dist}");
+        eprintln!(" => best median dist {best_med_dist}");
     }
 }
