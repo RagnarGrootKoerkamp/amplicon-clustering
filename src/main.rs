@@ -2,7 +2,10 @@ use std::{
     cmp::Reverse,
     collections::HashMap,
     path::PathBuf,
-    sync::{atomic::AtomicUsize, Mutex, RwLock},
+    sync::{
+        atomic::{AtomicUsize, Ordering::Relaxed},
+        Mutex, RwLock,
+    },
 };
 
 use clap::Parser;
@@ -122,15 +125,20 @@ fn main() {
     };
 
     let num_reads = reads.len();
-    let reads = Mutex::new(reads);
     let done = AtomicUsize::new(0);
 
+    let tid = AtomicUsize::new(0);
+    let s2 = searcher.clone();
     (0..num_reads)
         .into_par_iter()
-        .for_each_with(searcher.clone(), |searcher, _| {
-            let j = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        .for_each_init(move || {
+            let tid = tid.fetch_add(1, Relaxed);
+            (s2.clone(), tid)
+        }, |(searcher, tid), rid| {
+            // eprintln!("{tid} starting..");
+            let j = done.fetch_add(1, Relaxed);
             let trhp = (j + 1) as f64 / start.elapsed().as_secs_f64();
-            let read = std::mem::take(&mut reads.lock().unwrap()[j]);
+            let read = &reads[j];
             assert!(!read.is_empty());
 
             let threshold = threshold(&read);
@@ -152,7 +160,7 @@ fn main() {
                 }
                 if best.0 < threshold as i32 {
                     eprintln!(
-                        "{j:>6}/{num_reads} {trhp:>5.0}/s Best cost: {:>4} (len {:>4}) => append to {:>3}",
+                        "{tid:>4} {rid:>4} {j:>6}/{num_reads} {trhp:>5.0}/s Best cost: {:>4} (len {:>4}) => append to {:>3}",
                         best.0,
                         read.len(),
                         best.1
@@ -165,11 +173,14 @@ fn main() {
                     let mut clusters = global_clusters.write().unwrap();
                     if clusters.len() != old_len {
                         // clusters changed, retry
+                    eprintln!(
+                        "{tid:>4} {rid:>4} retry",
+                    );
                         continue 'clusters_changed;
                     }
 
                     eprintln!(
-                        "{j:>6}/{num_reads} {trhp:>5.0}/s Best cost: {:>4} (len {:>4}) => start new cluster {:>3}",
+                        "{tid:>4} {rid:>4} {j:>6}/{num_reads} {trhp:>5.0}/s Best cost: {:>4} (len {:>4}) => start new cluster {:>3}",
                         best.0,
                         read.len(),
                         clusters.len()
