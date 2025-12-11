@@ -37,23 +37,23 @@ struct Args {
 }
 
 /// The first element is the representative.
-struct Cluster {
+struct Cluster<'r> {
     root: Vec<u8>,
     /// (Sequence, Dist)
-    seqs: Mutex<Vec<(Vec<u8>, pa_types::Cost)>>,
+    seqs: Mutex<Vec<(&'r [u8], pa_types::Cost)>>,
 }
 
-impl Cluster {
-    fn new(seq: Vec<u8>) -> Self {
+impl<'r> Cluster<'r> {
+    fn new(seq: &'r [u8]) -> Self {
         Self {
-            root: seq.clone(),
+            root: seq.to_vec(),
             seqs: Mutex::new(vec![(seq, 0)]),
         }
     }
     fn representative(&self) -> &[u8] {
         &self.root
     }
-    fn push(&self, seq: Vec<u8>, dist: pa_types::Cost) {
+    fn push(&self, seq: &'r [u8], dist: pa_types::Cost) {
         self.seqs.lock().unwrap().push((seq, dist));
     }
 }
@@ -114,7 +114,7 @@ fn main() {
 
     let start = std::time::Instant::now();
 
-    let threshold = |read: &Vec<u8>| -> usize {
+    let threshold = |read: &[u8]| -> usize {
         let threshold = if let Some(r) = args.relative {
             (r * read.len() as f32) as usize
         } else {
