@@ -28,7 +28,7 @@ struct Args {
     threads: Option<usize>,
 
     /// Discard too short reads
-    #[clap(long, default_value_t = 425)]
+    #[clap(long, default_value_t = 450)]
     min_len: usize,
     /// Discard too long reads
     #[clap(long, default_value_t = 550)]
@@ -41,7 +41,6 @@ struct Args {
 
 /// The first element is the representative.
 struct Cluster<'r> {
-    root: Vec<u8>,
     /// (Sequence, Dist)
     seqs: Vec<(&'r [u8], pa_types::Cost)>,
 }
@@ -49,12 +48,8 @@ struct Cluster<'r> {
 impl<'r> Cluster<'r> {
     fn new(seq: &'r [u8]) -> Self {
         Self {
-            root: seq.to_vec(),
             seqs: vec![(seq, 0)],
         }
-    }
-    fn representative(&self) -> &[u8] {
-        &self.root
     }
     fn push(&mut self, seq: &'r [u8], dist: pa_types::Cost) {
         self.seqs.push((seq, dist));
@@ -104,7 +99,7 @@ fn main() {
     // Sort reads by decreasing length
     reads.sort_unstable_by_key(|r| Reverse(r.len()));
 
-    let global_clusters: Vec<Mutex<Cluster>> = (0..500)
+    let global_clusters: Vec<Mutex<Cluster>> = (0..5000)
         .map(|_| Mutex::new(Cluster::new(&reads[0])))
         .collect();
 
@@ -152,7 +147,7 @@ fn main() {
 
                     'clusters_changed: loop {
                         while let Ok(new_root) = rx.try_recv() {
-                            eprintln!("{tid:>4} received new root of len {}", new_root.len());
+                            // eprintln!("{tid:>4} received new root of len {}", new_root.len());
                             local_roots.push(new_root);
                         }
                         let local_roots: Vec<&[u8]> = local_roots.iter().map(|r| r.as_slice()).collect();
@@ -160,7 +155,7 @@ fn main() {
 
                         let mut best = (i32::MAX, 0);
 
-                        let mut matches = searcher.search_texts(&read, &local_roots, threshold, Some(threshold*2));
+                        let mut matches = searcher.search_texts(&read, &local_roots, threshold, Some(threshold/2));
                         matches.sort_by_key(|m| (m.1.cost, m.0));
                         let best_match = matches.get(0);
                         if let Some(best_m) = best_match {
@@ -168,7 +163,9 @@ fn main() {
                             best = best.min((cost, best_m.0));
                         }
 
-                        eprintln!("{tid: >4} matches: {:?}", matches.iter().map(|m| m.1.cost).collect::<Vec<_>>().as_slice().iter().collect::<Vec<_>>());
+                        if matches.len() > 1 {
+                            eprintln!("{tid: >4} matches: {:?}", matches.iter().map(|m| m.1.cost).collect::<Vec<_>>().as_slice().iter().collect::<Vec<_>>());
+                        }
 
                         if best.0 < threshold as i32 {
                             eprintln!(
@@ -181,7 +178,7 @@ fn main() {
                             break;
                         } else {
                             if !rx.is_empty() {
-                                eprintln!("{tid:>4} {idx:>4} retry",);
+                                eprintln!("{tid:>4} {idx:>6} retry",);
                                 continue 'clusters_changed;
                             }
 
