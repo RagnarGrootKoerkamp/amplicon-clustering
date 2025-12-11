@@ -147,17 +147,18 @@ fn main() {
                 let clusters = global_clusters.read().unwrap();
 
                 let mut best = (i32::MAX, 0);
-                for (i, cluster) in clusters.iter().enumerate() {
-                    let repr = cluster.representative();
-                    // let cost = aligner.align(&read, repr).0;
+                let reprs = clusters
+                    .iter()
+                    .map(|c| c.representative())
+                    .collect::<Vec<&[u8]>>();
 
-                    let matches = searcher.search(&read, repr, threshold);
-                    let best_match = matches.iter().min_by_key(|m| m.cost);
-                    if let Some(best_m) = best_match {
-                        let cost = best_m.cost;
-                        best = best.min((cost, i));
-                    }
+                let matches = searcher.search_texts(&read, &reprs, threshold);
+                let best_match = matches.iter().min_by_key(|m| (m.1.cost, m.0));
+                if let Some(best_m) = best_match {
+                    let cost = best_m.1.cost;
+                    best = best.min((cost, best_m.0));
                 }
+
                 if best.0 < threshold as i32 {
                     eprintln!(
                         "{tid:>4} {rid:>4} {j:>6}/{num_reads} {trhp:>5.0}/s Best cost: {:>4} (len {:>4}) => append to {:>3}",
