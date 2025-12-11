@@ -16,9 +16,9 @@ struct Args {
     input: PathBuf,
     #[clap(short, long)]
     threshold: Option<usize>,
-    #[clap(short, long)]
+    #[clap(short, long, default_value_t = 0.2)]
     alpha: f32,
-    #[clap(short, long)]
+    #[clap(short, long, default_value = "0.15")]
     relative: Option<f32>,
 
     /// Discard too short reads
