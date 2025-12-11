@@ -104,7 +104,7 @@ fn main() {
     // Sort reads by decreasing length
     reads.sort_unstable_by_key(|r| Reverse(r.len()));
 
-    let global_clusters: Vec<Mutex<Cluster>> = (0..300)
+    let global_clusters: Vec<Mutex<Cluster>> = (0..500)
         .map(|_| Mutex::new(Cluster::new(&reads[0])))
         .collect();
 
@@ -160,7 +160,7 @@ fn main() {
 
                         let mut best = (i32::MAX, 0);
 
-                        let mut matches = searcher.search_texts(&read, &local_roots, threshold);
+                        let mut matches = searcher.search_texts(&read, &local_roots, threshold, Some(threshold*2));
                         matches.sort_by_key(|m| (m.1.cost, m.0));
                         let best_match = matches.get(0);
                         if let Some(best_m) = best_match {
@@ -168,7 +168,7 @@ fn main() {
                             best = best.min((cost, best_m.0));
                         }
 
-                        eprintln!("{tid: >4} matches: {:?}", matches.iter().map(|m| m.1.cost).collect::<Vec<_>>());
+                        eprintln!("{tid: >4} matches: {:?}", matches.iter().map(|m| m.1.cost).collect::<Vec<_>>().as_slice().iter().collect::<Vec<_>>());
 
                         if best.0 < threshold as i32 {
                             eprintln!(
