@@ -105,7 +105,9 @@ fn main() {
     // let mut aligner = params.make_aligner(false);
 
     // sassy
-    let mut searcher = sassy::Searcher::<Iupac>::new_rc_with_overhang(args.alpha);
+    let searcher = sassy::Searcher::<Iupac>::new_rc_with_overhang(args.alpha)
+        .only_best_match()
+        .without_trace();
 
     let start = std::time::Instant::now();
 
@@ -203,6 +205,8 @@ fn main() {
         }
     }
 
+    let mut trace_searcher = searcher.clone().with_trace();
+
     // For each cluster, compute the distance from each seq to all others, and
     // take the one with lowest median.
     for (ci, cluster) in clusters.iter().enumerate() {
@@ -213,7 +217,7 @@ fn main() {
             let mut dists = seqs
                 .par_iter()
                 .map_with(searcher.clone(), |searcher, (seq_k, _)| {
-                    let threshold = threshold(&seq_j);
+                    let threshold = threshold(seq_j);
                     let matches = searcher.search(seq_k, seq_j, threshold);
                     let best_match = matches.iter().min_by_key(|m| m.cost);
                     let dist = best_match.map_or(i32::MAX, |m| m.cost);
@@ -227,12 +231,12 @@ fn main() {
         }
         let (best_med_dist, best_idx) = best_med;
         eprintln!(" => best median dist {best_med_dist}");
-        let root = &seqs[best_idx].0.clone();
+        let root = &seqs[best_idx].0;
         let threshold = threshold(&root) + 20;
         // print alignment of root to all others
         let mut best_matches = vec![];
         for (seq, _) in seqs.iter() {
-            let matches = searcher.search(root, seq, threshold);
+            let matches = trace_searcher.search(root, seq, threshold);
             if let Some(best_match) = matches.into_iter().min_by_key(|m| m.cost) {
                 best_matches.push((seq, best_match));
             }
