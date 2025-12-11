@@ -26,6 +26,10 @@ struct Args {
     /// Discard too long reads
     #[clap(long, default_value_t = 550)]
     max_len: usize,
+
+    /// Discard reads in too smal clusters
+    #[clap(long, default_value_t = 5)]
+    min_cluster_size: usize,
 }
 
 /// The first element is the representative.
@@ -172,17 +176,24 @@ fn main() {
         "Clustering completed in {:.1} seconds",
         duration.as_secs_f64()
     );
-    eprintln!("Cluster sizes");
-    let clusters = global_clusters.into_inner().unwrap();
-    for (i, cluster) in clusters.iter().enumerate() {
-        let seqs = cluster.seqs.lock().unwrap();
-        let mut lens = seqs.iter().map(|(s, _)| s.len()).collect::<Vec<usize>>();
-        lens.sort_unstable();
-        eprintln!(
-            "Cluster {:>3}: {:>4} seqs with lens {lens:?}",
-            i,
-            seqs.len()
-        );
+
+    let mut clusters = global_clusters.into_inner().unwrap();
+    {
+        eprintln!("Cluster sizes");
+        // Sort clusters by size.
+        clusters.sort_by_cached_key(|c| Reverse(c.seqs.lock().unwrap().len()));
+        // retain only sufficiently large clusters
+        clusters.retain(|c| c.seqs.lock().unwrap().len() >= args.min_cluster_size);
+        for (i, cluster) in clusters.iter().enumerate() {
+            let seqs = cluster.seqs.lock().unwrap();
+            let mut lens = seqs.iter().map(|(s, _)| s.len()).collect::<Vec<usize>>();
+            lens.sort_unstable();
+            eprintln!(
+                "Cluster {:>3}: {:>4} seqs with lens {lens:?}",
+                i,
+                seqs.len()
+            );
+        }
     }
 
     // For each cluster, compute the distance from each seq to all others, and
