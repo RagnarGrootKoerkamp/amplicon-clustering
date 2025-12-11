@@ -1,4 +1,5 @@
 use std::{
+    cmp::Reverse,
     collections::HashMap,
     path::PathBuf,
     sync::{atomic::AtomicUsize, Mutex, RwLock},
@@ -94,6 +95,9 @@ fn main() {
         reads.retain(|r| args.min_len <= r.len() && r.len() <= args.max_len);
     }
 
+    // Sort reads by decreasing length
+    reads.sort_unstable_by_key(|r| Reverse(r.len()));
+
     let global_clusters: RwLock<Vec<Cluster>> = RwLock::new(vec![]);
 
     // A*PA2
@@ -102,8 +106,6 @@ fn main() {
 
     // sassy
     let mut searcher = sassy::Searcher::<Iupac>::new_rc_with_overhang(args.alpha);
-
-    let done = AtomicUsize::new(0);
 
     let start = std::time::Instant::now();
 
@@ -117,9 +119,18 @@ fn main() {
         threshold
     };
 
-    reads
+    let num_reads = reads.len();
+    let reads = Mutex::new(reads);
+    let done = AtomicUsize::new(0);
+
+    (0..num_reads)
         .into_par_iter()
-        .for_each_with(searcher.clone(), |searcher, read: Vec<u8>| {
+        .for_each_with(searcher.clone(), |searcher, _| {
+            let j = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let trhp = (j + 1) as f64 / start.elapsed().as_secs_f64();
+            let read = std::mem::take(&mut reads.lock().unwrap()[j]);
+            assert!(!read.is_empty());
+
             let threshold = threshold(&read);
 
             'clusters_changed: loop {
@@ -138,8 +149,6 @@ fn main() {
                     }
                 }
                 if best.0 < threshold as i32 {
-                    let j = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    let trhp = (j + 1) as f64 / start.elapsed().as_secs_f64();
                     eprintln!(
                         "{j:>6}/{num_reads} {trhp:>5.0}/s Best cost: {:>4} (len {:>4}) => append to {:>3}",
                         best.0,
@@ -157,8 +166,6 @@ fn main() {
                         continue 'clusters_changed;
                     }
 
-                    let j = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    let trhp = (j + 1) as f64 / start.elapsed().as_secs_f64();
                     eprintln!(
                         "{j:>6}/{num_reads} {trhp:>5.0}/s Best cost: {:>4} (len {:>4}) => start new cluster {:>3}",
                         best.0,
