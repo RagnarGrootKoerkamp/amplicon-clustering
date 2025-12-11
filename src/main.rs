@@ -227,5 +227,27 @@ fn main() {
         }
         let (best_med_dist, best_idx) = best_med;
         eprintln!(" => best median dist {best_med_dist}");
+        let root = &seqs[best_idx].0.clone();
+        let threshold = threshold(&root) + 20;
+        // print alignment of root to all others
+        let mut best_matches = vec![];
+        for (seq, _) in seqs.iter() {
+            let matches = searcher.search(root, seq, threshold);
+            if let Some(best_match) = matches.into_iter().min_by_key(|m| m.cost) {
+                best_matches.push((seq, best_match));
+            }
+        }
+        best_matches.sort_unstable_by_key(|(_, m)| m.cost);
+        for (seq, m) in best_matches {
+            let pretty = m.pretty_print(
+                None,
+                root,
+                seq,
+                sassy::pretty_print::PrettyPrintDirection::Pattern,
+                10,
+                sassy::pretty_print::PrettyPrintStyle::Compact,
+            );
+            eprintln!("{pretty}");
+        }
     }
 }
