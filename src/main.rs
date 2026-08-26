@@ -21,6 +21,8 @@ struct Args {
     threshold: Option<usize>,
     #[clap(short, long, default_value_t = 0.2)]
     alpha: f32,
+    #[clap(short, long)]
+    max_overhang: Option<usize>,
     #[clap(short, long, default_value = "0.15")]
     relative: Option<f32>,
 
@@ -105,6 +107,7 @@ fn main() {
 
     // sassy
     let searcher = sassy::Searcher::<Iupac>::new_rc_with_overhang(args.alpha)
+        .with_max_overhang(args.max_overhang)
         .only_best_match()
         .without_trace();
 
